@@ -152,17 +152,21 @@ class NetWrapper(nn.Module):
         if return_embedding:
             return representation
 
+        # flatten FPN output
+        representation = representation.contiguous().view(-1, representation.shape[-1])
+
         projector = self._get_projector(representation)
         projection = projector(representation)
         return projection, representation
 
 # main class
 
-class BYOL(nn.Module):
+class BYOLFPN(nn.Module):
     def __init__(
         self,
         net,
         image_size,
+        n_fpn_levels=5,
         hidden_layer = -2,
         projection_size = 256,
         projection_hidden_size = 4096,
@@ -173,9 +177,7 @@ class BYOL(nn.Module):
     ):
         super().__init__()
         self.net = net
-
-        if not isinstance(image_size, tuple):
-            image_size = (image_size, image_size)
+        self.n_fpn_levels = n_fpn_levels
 
         # default SimCLR augmentation
 
@@ -190,7 +192,7 @@ class BYOL(nn.Module):
                 T.GaussianBlur((3, 3), (1.0, 2.0)),
                 p = 0.2
             ),
-            T.RandomResizedCrop(image_size),
+            T.RandomResizedCrop((image_size, image_size)),
             T.Normalize(
                 mean=torch.tensor([0.485, 0.456, 0.406]),
                 std=torch.tensor([0.229, 0.224, 0.225])),
@@ -213,8 +215,8 @@ class BYOL(nn.Module):
 
         # send a mock image tensor to instantiate singleton parameters
         self.forward((
-            torch.randn((2, 3) + image_size, device=device),
-            torch.randn((2, 3) + image_size, device=device)
+            torch.randn(4, 3, image_size, image_size, device=device),
+            torch.randn(4, 3, image_size, image_size, device=device)
         ))
 
     @singleton('target_encoder')
@@ -238,10 +240,10 @@ class BYOL(nn.Module):
 
         # image_one, image_two = self.augment1(x), self.augment2(x)
         image_one, image_two = x
+        batch = image_one.shape[0]
 
         online_proj_one, _ = self.online_encoder(image_one)
         online_proj_two, _ = self.online_encoder(image_two)
-
         online_pred_one = self.online_predictor(online_proj_one)
         online_pred_two = self.online_predictor(online_proj_two)
 
@@ -254,6 +256,10 @@ class BYOL(nn.Module):
 
         loss_one = loss_fn(online_pred_one, target_proj_two.detach())
         loss_two = loss_fn(online_pred_two, target_proj_one.detach())
+
+        # compute loss at each fpn level, then reshape and calculate mean loss of fpn for each batch
+        loss_one = loss_one.view(batch, self.n_fpn_levels).mean(dim=-1)
+        loss_two = loss_two.view(batch, self.n_fpn_levels).mean(dim=-1)
 
         loss = loss_one + loss_two
         return loss.mean()

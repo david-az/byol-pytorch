@@ -7,6 +7,7 @@ from PIL import Image
 import torch
 from torchvision import models, transforms
 from torch.utils.data import DataLoader, Dataset
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from byol_pytorch import BYOL
 import pytorch_lightning as pl
@@ -26,11 +27,11 @@ args = parser.parse_args()
 
 # constants
 
-BATCH_SIZE = 32
+BATCH_SIZE = 4
 EPOCHS     = 1000
 LR         = 3e-4
-NUM_GPUS   = 2
-IMAGE_SIZE = 256
+NUM_GPUS   = 1
+IMAGE_SIZE = 1280
 IMAGE_EXTS = ['.jpg', '.png', '.jpeg']
 NUM_WORKERS = multiprocessing.cpu_count()
 
@@ -89,11 +90,28 @@ class ImagesDataset(Dataset):
         img = img.convert('RGB')
         return self.transform(img)
 
+
+class NormalizeMeanVar():
+    def __call__(self, img):
+        return (img - img.mean(0, True)) / img.std(0, keepdim=True)
+
 # main
 
 if __name__ == '__main__':
     ds = ImagesDataset(args.image_folder, IMAGE_SIZE)
     train_loader = DataLoader(ds, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS, shuffle=True)
+
+    augment_pipeline = torch.nn.Sequential(
+            T.RandomResizedCrop(size=1024, scale=(0.9, 1.0), ratio=(1., 1.)),
+            T.RandomApply(
+                [T.ColorJitter(0.2, 0.2, 0.2, 0.2)],
+                p = 0.3
+            ),
+            NormalizeMeanVar(),
+            T.RandomHorizontalFlip(),
+            T.RandomVerticalFlip(),
+            T.RandomRotation(degrees=(0, 30), expand=False)
+    )
 
     model = SelfSupervisedLearner(
         resnet,
@@ -101,14 +119,28 @@ if __name__ == '__main__':
         hidden_layer = 'avgpool',
         projection_size = 256,
         projection_hidden_size = 4096,
-        moving_average_decay = 0.99
+        moving_average_decay = 0.99,
+        augment_fn=augment_pipeline,
+        augment_fn2=augment_pipeline
+    )
+
+
+    # DEFAULTS used by the Trainer
+    checkpoint_callback = ModelCheckpoint(
+        filepath=os.getcwd(),
+        save_top_k=30,
+        verbose=True,
+        monitor='loss',
+        mode='min',
+        prefix=''
     )
 
     trainer = pl.Trainer(
         gpus = NUM_GPUS,
         max_epochs = EPOCHS,
-        accumulate_grad_batches = 1,
-        sync_batchnorm = True
+        accumulate_grad_batches = 8,
+        sync_batchnorm = False,
+        checkpoint_callback=checkpoint_callback
     )
 
-    trainer.fit(model, train_loader)
+    trainer.fit(model, train_loader, gpus=[0])

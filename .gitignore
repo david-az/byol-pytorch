@@ -6,6 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+examples/lightning/r50_instance_first/
+examples/lightning/fpn_simple/
+examples/lightning/instance_multiview_1500_832/
+examples/lightning/lightning_logs/
+examples/lightning/fpn_multiview/
+lightning_logs/
 # Distribution / packaging
 .Python
 build/
